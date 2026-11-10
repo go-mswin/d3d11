@@ -1,0 +1,122 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # The portable half (sizes, limits, validation, HRESULT mapping, the stubs
+  # every other OS gets) with a 100 % coverage gate. The Windows-only files are
+  # not built here; they are proven on the windows job below.
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        shell: bash
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -race -count=1 ./...
+      - name: coverage gate (100%)
+        shell: bash
+        run: |
+          go test -count=1 -coverprofile=cov.out ./...
+          go tool cover -func=cov.out | tee cov.txt
+          grep -q 'total:.*100.0%' cov.txt || { echo "coverage below 100%"; exit 1; }
+
+  # The proof. windows-latest has no GPU: Direct3D runs on WARP, the software
+  # rasterizer that ships with Windows. It dispatches the fill kernel and the
+  # staging read-back must hold the expected bytes; a UAV bound at the wrong
+  # slot must NOT produce them; the committed DXBC must equal a fresh
+  # D3DCompile; and no COM object may outlive a test.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: vet
+        run: go vet ./...
+      - name: test on WARP (race)
+        env:
+          D3D11_DXBC_OUT: ${{ runner.temp }}\dxbc
+        run: go test -race -count=1 -v ./...
+      - name: coverage (informational, the COM paths)
+        run: go test -count=1 -cover ./...
+      - name: fresh DXBC
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dxbc
+          path: ${{ runner.temp }}\dxbc
+          if-no-files-found: warn
+
+  linux-386:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: test (32-bit int)
+        env:
+          GOARCH: "386"
+        run: go test -count=1 ./...
+
+  # Six 64-bit Linux architectures (the Windows-only files are excluded, the
+  # stubs and the portable half must still compile, tests included), and the
+  # Windows targets, where the real code must at least vet.
+  cross:
+    name: cross ${{ matrix.goos }}/${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {goos: linux, arch: amd64}
+          - {goos: linux, arch: arm64}
+          - {goos: linux, arch: riscv64}
+          - {goos: linux, arch: loong64}
+          - {goos: linux, arch: ppc64le}
+          - {goos: linux, arch: s390x}
+          - {goos: windows, arch: amd64}
+          - {goos: windows, arch: arm64}
+          - {goos: windows, arch: "386"}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: vet, tests included
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: go vet ./...
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - name: govulncheck (the Windows build, where the real code is)
+        env:
+          GOOS: windows
+        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
