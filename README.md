@@ -43,7 +43,9 @@ out, err := ctx.Readback(dst, 5*time.Second) // staging copy + event query + Map
 | Buffers | `CreateBuffer(BufferDesc)`: `KindStructured`, `KindRaw`, `KindConstant`, `KindStaging` |
 | Views | `Buffer.SRV()`, `Buffer.UAV()` (structured, or raw `ByteAddressBuffer` views) |
 | Compute | `CreateComputeShader(dxbc)`, `Context.SetShader/SetSRVs/SetUAVs/SetConstantBuffers/UpdateBuffer/Dispatch` |
-| Read-back | `CopyBuffer`, `Wait(timeout)` (`D3D11_QUERY_EVENT`), `MapRead`/`Unmap`, `Readback` |
+| Updates (v0.2.0) | `UpdateBuffer` on constant buffers (whole), on `Dynamic` structured/raw buffers (`Map` `WRITE_DISCARD`: GPU read-only inputs rewritten every frame) and on DEFAULT structured/raw buffers (`UpdateSubresource`, whole or a prefix: buffers a shader writes through a UAV) |
+| Submission (v0.2.0) | `Context.Flush`; `Context.Signal()` returns a `Fence` (one `D3D11_QUERY_EVENT` per submission) with `Done`, `Wait(timeout)`, `Close` |
+| Read-back | `CopyBuffer`, `Wait(timeout)` (`Signal` then `Fence.Wait`), `MapRead`/`Unmap`, `Readback` |
 | Errors | `*Error{Op, Code}`; sentinels `ErrDeviceRemoved`, `ErrOutOfMemory`, `ErrInvalidArg`, `ErrUnsupported`, `ErrTooLarge`, `ErrBadDesc`, `ErrBadBytecode`, `ErrTimeout`, `ErrClosed` |
 | `dxgi` | `CreateFactory1`, `Factory.EnumAdapter/Adapters`, `Adapter.Desc/Ptr`, `DescribeDeviceAdapter` |
 | `d3dcompiler` | `Compile(hlsl, name, entry, target, flags)`: `D3DCompile` through syscall |

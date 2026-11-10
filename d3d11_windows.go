@@ -30,7 +30,11 @@ const (
 	sdkVersion         = 7 // D3D11_SDK_VERSION
 
 	usageDefault = 0 // D3D11_USAGE_DEFAULT
+	usageDynamic = 2 // D3D11_USAGE_DYNAMIC
 	usageStaging = 3 // D3D11_USAGE_STAGING
+
+	cpuAccessWrite  = 0x10000 // D3D11_CPU_ACCESS_WRITE
+	mapWriteDiscard = 4       // D3D11_MAP_WRITE_DISCARD
 
 	bindConstantBuffer  = 0x4  // D3D11_BIND_CONSTANT_BUFFER
 	bindShaderResource  = 0x8  // D3D11_BIND_SHADER_RESOURCE
@@ -237,6 +241,9 @@ func (d *Device) CreateBuffer(desc BufferDesc) (*Buffer, error) {
 		bd.BindFlags = bindConstantBuffer
 	case KindStaging:
 		bd.Usage, bd.CPUAccessFlags = usageStaging, cpuAccessRead
+	}
+	if desc.Dynamic {
+		bd.Usage, bd.CPUAccessFlags = usageDynamic, cpuAccessWrite
 	}
 	if desc.SRV {
 		bd.BindFlags |= bindShaderResource
@@ -481,19 +488,151 @@ func (c *Context) SetConstantBuffers(start uint32, bufs ...*Buffer) error {
 	return nil
 }
 
-// UpdateBuffer overwrites a whole constant buffer (UpdateSubresource).
+// box is D3D11_BOX: bytes for a buffer, left to right.
+type box struct{ Left, Top, Front, Right, Bottom, Back uint32 }
+
+// UpdateBuffer writes data into a constant, structured or raw buffer from the
+// CPU. The commands already queued keep seeing the old contents; those issued
+// after see the new.
+//
+//   - A constant buffer is overwritten whole (len(data) == Size) with
+//     UpdateSubresource and no box: "it is not possible to use this method to
+//     partially update a shader-constant buffer".
+//   - A Dynamic buffer (D3D11_USAGE_DYNAMIC, "a good choice for a resource that
+//     will be updated by the CPU at least once per frame") is mapped with
+//     WRITE_DISCARD, which is what the documentation recommends for it, and
+//     data is copied to its start; len(data) <= Size, and the bytes past it are
+//     undefined (the discard gave a fresh allocation).
+//   - Any other structured or raw buffer is DEFAULT usage, which a shader may
+//     write: UpdateSubresource copies data to its start (a box of len(data)
+//     bytes when that is less than Size, the rest keeps its contents). This is
+//     how the target of a compute pass is given the CPU's ground.
+//
+// UpdateSubresource copies data before it returns, so the caller may reuse data
+// at once.
 func (c *Context) UpdateBuffer(b *Buffer, data []byte) error {
 	if err := c.open(); err != nil {
 		return err
 	}
-	if err := b.usable("UpdateBuffer", b != nil && b.desc.Kind == KindConstant, "KindConstant"); err != nil {
+	ok := b != nil && (b.desc.Kind == KindConstant || b.desc.Kind == KindStructured || b.desc.Kind == KindRaw)
+	if err := b.usable("UpdateBuffer", ok, "KindConstant, KindStructured or KindRaw"); err != nil {
 		return err
 	}
-	if uint64(len(data)) != b.desc.Size {
-		return fmt.Errorf("%w: %d bytes for a %d-byte constant buffer", ErrBadDesc, len(data), b.desc.Size)
+	n := uint64(len(data))
+	switch {
+	case b.desc.Kind == KindConstant:
+		if n != b.desc.Size {
+			return fmt.Errorf("%w: %d bytes for a %d-byte constant buffer", ErrBadDesc, n, b.desc.Size)
+		}
+	case n == 0 || n > b.desc.Size:
+		return fmt.Errorf("%w: %d bytes for a %d-byte buffer", ErrBadDesc, n, b.desc.Size)
 	}
-	com.Call6(c.ptr, ctxUpdateSubresource, uintptr(b.ptr), 0, 0, uintptr(unsafe.Pointer(&data[0])), 0, 0)
+	if b.desc.Dynamic {
+		var ms mappedSubresource
+		h := com.Call5(c.ptr, ctxMap, uintptr(b.ptr), 0, mapWriteDiscard, 0, uintptr(unsafe.Pointer(&ms)))
+		if err := c.dev.fail("Map", h); err != nil {
+			return err
+		}
+		if ms.Data == nil {
+			return com.Check("Map", com.EFail)
+		}
+		copy(unsafe.Slice((*byte)(ms.Data), int(b.desc.Size)), data)
+		com.Call2(c.ptr, ctxUnmap, uintptr(b.ptr), 0)
+		return nil
+	}
+	var dst *box
+	if n < b.desc.Size {
+		dst = &box{Right: uint32(n), Bottom: 1, Back: 1}
+	}
+	com.Call6(c.ptr, ctxUpdateSubresource, uintptr(b.ptr), 0, uintptr(unsafe.Pointer(dst)), uintptr(unsafe.Pointer(&data[0])), 0, 0)
 	return nil
+}
+
+// Flush sends the queued commands to the GPU without waiting for them
+// (ID3D11DeviceContext::Flush), so that work submitted now runs while the CPU
+// does something else. Wait and Fence.Wait flush too.
+func (c *Context) Flush() error {
+	if err := c.open(); err != nil {
+		return err
+	}
+	com.Call0(c.ptr, ctxFlush)
+	return nil
+}
+
+// Fence is an event query marking a point in the context's command stream:
+// done once the GPU has finished every command issued before Signal.
+type Fence struct {
+	ctx *Context
+	q   unsafe.Pointer
+}
+
+// Signal ends an event query after the commands issued so far. Close the Fence.
+// One per submitted frame lets each frame be waited for on its own.
+func (c *Context) Signal() (*Fence, error) {
+	if err := c.open(); err != nil {
+		return nil, err
+	}
+	d := c.dev
+	qd := queryDesc{Query: queryEvent}
+	var q unsafe.Pointer
+	if err := d.fail("CreateQuery", com.Call2(d.ptr, devCreateQuery, uintptr(unsafe.Pointer(&qd)), uintptr(unsafe.Pointer(&q)))); err != nil {
+		return nil, err
+	}
+	if q == nil {
+		return nil, com.Check("CreateQuery", com.EFail)
+	}
+	com.Adopt()
+	com.Call1(c.ptr, ctxEnd, uintptr(q))
+	return &Fence{ctx: c, q: q}, nil
+}
+
+// Done reports whether the GPU has passed the fence. It flushes, since a
+// command that was never sent would never finish.
+func (f *Fence) Done() (bool, error) {
+	if f == nil || f.q == nil {
+		return false, ErrClosed
+	}
+	c := f.ctx
+	if err := c.open(); err != nil {
+		return false, err
+	}
+	var done uint32 // BOOL
+	h := com.Call4(c.ptr, ctxGetData, uintptr(f.q), uintptr(unsafe.Pointer(&done)), 4, 0)
+	if err := c.dev.fail("GetData", h); err != nil {
+		return false, err
+	}
+	return h == com.SOK && done != 0, nil // S_FALSE: not finished yet
+}
+
+// Wait blocks until the GPU has passed the fence, or ErrTimeout; the removal
+// error if the device was lost meanwhile.
+func (f *Fence) Wait(timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for spin := 0; ; spin++ {
+		done, err := f.Done()
+		if err != nil || done {
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			if err := f.ctx.dev.RemovedReason(); err != nil {
+				return err
+			}
+			return ErrTimeout
+		}
+		if spin < 1000 {
+			runtime.Gosched()
+		} else {
+			time.Sleep(50 * time.Microsecond)
+		}
+	}
+}
+
+// Close releases the query. It is idempotent.
+func (f *Fence) Close() {
+	if f != nil && f.q != nil {
+		com.Release(f.q)
+		f.q = nil
+	}
 }
 
 // Dispatch runs the bound compute shader on x*y*z thread groups.
@@ -528,44 +667,12 @@ func (c *Context) CopyBuffer(dst, src *Buffer) error {
 // [ErrTimeout] after timeout, and returns the removal error if the device was
 // lost meanwhile. The query is released on every path.
 func (c *Context) Wait(timeout time.Duration) error {
-	if err := c.open(); err != nil {
+	f, err := c.Signal()
+	if err != nil {
 		return err
 	}
-	d := c.dev
-	qd := queryDesc{Query: queryEvent}
-	var q unsafe.Pointer
-	if err := d.fail("CreateQuery", com.Call2(d.ptr, devCreateQuery, uintptr(unsafe.Pointer(&qd)), uintptr(unsafe.Pointer(&q)))); err != nil {
-		return err
-	}
-	if q == nil {
-		return com.Check("CreateQuery", com.EFail)
-	}
-	com.Adopt()
-	defer com.Release(q)
-	com.Call1(c.ptr, ctxEnd, uintptr(q))
-	deadline := time.Now().Add(timeout)
-	for spin := 0; ; spin++ {
-		var done uint32 // BOOL
-		h := com.Call4(c.ptr, ctxGetData, uintptr(q), uintptr(unsafe.Pointer(&done)), 4, 0)
-		if err := d.fail("GetData", h); err != nil {
-			return err
-		}
-		if h == com.SOK && done != 0 {
-			return nil
-		}
-		// S_FALSE: not finished yet.
-		if !time.Now().Before(deadline) {
-			if err := d.RemovedReason(); err != nil {
-				return err
-			}
-			return ErrTimeout
-		}
-		if spin < 1000 {
-			runtime.Gosched()
-		} else {
-			time.Sleep(50 * time.Microsecond)
-		}
-	}
+	defer f.Close()
+	return f.Wait(timeout)
 }
 
 // MapRead maps a staging buffer for reading. The returned slice aliases the

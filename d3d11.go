@@ -113,6 +113,12 @@ type BufferDesc struct {
 	Stride uint32
 	// SRV and UAV allow views of that kind (structured and raw only).
 	SRV, UAV bool
+	// Dynamic makes the buffer D3D11_USAGE_DYNAMIC (structured or raw, SRV only,
+	// no UAV): GPU read-only, CPU write-only, for data the CPU rewrites every
+	// frame and a shader reads. Update it with Context.UpdateBuffer, which maps
+	// it with WRITE_DISCARD. A buffer that a shader writes (UAV) is DEFAULT
+	// instead, and UpdateBuffer fills it with UpdateSubresource.
+	Dynamic bool
 	// Initial, when not nil, must be exactly Size bytes.
 	Initial []byte
 }
@@ -142,6 +148,11 @@ func (d BufferDesc) validate(maxBytes uint64) (uint32, error) {
 	}
 	if (d.Kind == KindStructured || d.Kind == KindRaw) && !d.SRV && !d.UAV {
 		return bad("a structured or raw buffer needs SRV or UAV (it would have no bind flag)")
+	}
+	if d.Dynamic && ((d.Kind != KindStructured && d.Kind != KindRaw) || d.UAV) {
+		// Resource Bind Options (D3D11_USAGE): a dynamic resource is an input to a
+		// stage only, never an output, so it cannot have a UAV.
+		return bad("a dynamic buffer is structured or raw, with an SRV and no UAV")
 	}
 	switch d.Kind {
 	case KindStructured:
