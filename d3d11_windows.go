@@ -53,7 +53,7 @@ const (
 	bufferExSRVFlagRaw = 1 // D3D11_BUFFEREX_SRV_FLAG_RAW
 	bufferUAVFlagRaw   = 1 // D3D11_BUFFER_UAV_FLAG_RAW
 
-	queryEvent = 1 // D3D11_QUERY_EVENT
+	queryEvent = 0 // D3D11_QUERY_EVENT (the first enumerator; 1 is OCCLUSION, whose GetData wants 8 bytes)
 )
 
 type bufferDesc struct {
