@@ -44,6 +44,7 @@ out, err := ctx.Readback(dst, 5*time.Second) // staging copy + event query + Map
 | Views | `Buffer.SRV()`, `Buffer.UAV()` (structured, or raw `ByteAddressBuffer` views) |
 | Compute | `CreateComputeShader(dxbc)`, `Context.SetShader/SetSRVs/SetUAVs/SetConstantBuffers/UpdateBuffer/Dispatch` |
 | Updates (v0.2.0) | `UpdateBuffer` on constant buffers (whole), on `Dynamic` structured/raw buffers (`Map` `WRITE_DISCARD`: GPU read-only inputs rewritten every frame) and on DEFAULT structured/raw buffers (`UpdateSubresource`, whole or a prefix: buffers a shader writes through a UAV) |
+| Swap chain (v0.3.0) | `Device.CreateSwapChain(hwnd, dxgi.SwapChainDesc)`: flip model (`FLIP_DISCARD`), `R8G8B8A8_UNORM`, 2+ buffers usable as render target, shader input and UAV; `SwapChain.BackBuffer/Present/Resize/Close`, `Texture.UAV`, `Context.ReadbackTexture/ClearState`; in `dxgi`: `FactoryOfDevice`, `Factory.CreateSwapChainForHwnd`, `SwapChain` |
 | Submission (v0.2.0) | `Context.Flush`; `Context.Signal()` returns a `Fence` (one `D3D11_QUERY_EVENT` per submission) with `Done`, `Wait(timeout)`, `Close` |
 | Read-back | `CopyBuffer`, `Wait(timeout)` (`Signal` then `Fence.Wait`), `MapRead`/`Unmap`, `Readback` |
 | Errors | `*Error{Op, Code}`; sentinels `ErrDeviceRemoved`, `ErrOutOfMemory`, `ErrInvalidArg`, `ErrUnsupported`, `ErrTooLarge`, `ErrBadDesc`, `ErrBadBytecode`, `ErrTimeout`, `ErrClosed` |

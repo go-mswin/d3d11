@@ -38,3 +38,30 @@ func (*Adapter) Close() {}
 func DescribeDeviceAdapter(unsafe.Pointer) (AdapterDesc, error) {
 	return AdapterDesc{}, ErrUnsupportedPlatform
 }
+
+// SwapChain is an IDXGISwapChain1. Off Windows it cannot be created.
+type SwapChain struct{}
+
+// FactoryOfDevice is unavailable off Windows.
+func FactoryOfDevice(unsafe.Pointer) (*Factory, error) { return nil, ErrUnsupportedPlatform }
+
+// CreateSwapChainForHwnd is unavailable off Windows (a bad description is still
+// refused first).
+func (*Factory) CreateSwapChainForHwnd(_ unsafe.Pointer, _ uintptr, d SwapChainDesc) (*SwapChain, error) {
+	if _, err := d.validated(); err != nil {
+		return nil, err
+	}
+	return nil, ErrUnsupportedPlatform
+}
+
+// Present is unavailable off Windows.
+func (*SwapChain) Present(uint32) error { return ErrUnsupportedPlatform }
+
+// BackBuffer is unavailable off Windows.
+func (*SwapChain) BackBuffer(uint32) (unsafe.Pointer, error) { return nil, ErrUnsupportedPlatform }
+
+// ResizeBuffers is unavailable off Windows.
+func (*SwapChain) ResizeBuffers(uint32, uint32) error { return ErrUnsupportedPlatform }
+
+// Close does nothing.
+func (*SwapChain) Close() {}
