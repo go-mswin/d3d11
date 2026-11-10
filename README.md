@@ -166,6 +166,18 @@ staging read-back has the expected bytes (`TestWARPFillDispatch`); the same
 dispatch with the UAV bound at the wrong slot must fail the comparison and leaves
 the buffer zero (`TestWrongUAVBindingFails`).
 
+### Measured on windows-latest (2026-11-10)
+
+The adapter is "Microsoft Basic Render Driver" (software), feature level 11_1,
+dedicated video memory 0, so the buffer limit is the 128 MiB floor and a buffer
+of exactly 128 MiB was created. All tests passed with `-race`: the fill dispatch
+read-back equals the expected bytes, the wrong-UAV dispatch left the buffer zero,
+the raw-buffer SRV/UAV dispatch matched, a structured read past the end returned
+0, the leak counter returned to zero on every path, and the committed DXBC equals
+a fresh `D3DCompile`. The first run also showed what the slot lists cannot:
+`D3D11_QUERY_EVENT` is enumerator 0 (1 is occlusion, whose `GetData` wants 8
+bytes and answered `E_INVALIDARG`).
+
 ## Licence
 
 BSD 3-Clause.
