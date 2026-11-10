@@ -191,3 +191,167 @@ func DescribeDeviceAdapter(device unsafe.Pointer) (AdapterDesc, error) {
 	defer com.Release(ad1)
 	return describe(ad1)
 }
+
+// Swap chain interface identities and vtable slots.
+var (
+	iidIDXGIFactory2   = com.GUID{Data1: 0x50c83a1c, Data2: 0xe072, Data3: 0x4c48, Data4: [8]byte{0x87, 0xb0, 0x36, 0x30, 0xfa, 0x36, 0xa6, 0xd0}}
+	iidID3D11Texture2D = com.GUID{Data1: 0x6f15aaf2, Data2: 0xd208, Data3: 0x4e89, Data4: [8]byte{0x9a, 0xb4, 0x48, 0x95, 0x35, 0xd3, 0x4f, 0x9c}}
+)
+
+const (
+	// IUnknown(0..2), IDXGIObject: SetPrivateData(3) SetPrivateDataInterface(4)
+	// GetPrivateData(5) GetParent(6).
+	slotObjectGetParent = 6
+
+	// IDXGIFactory1 ends at IsCurrent(13); IDXGIFactory2: IsWindowedStereoEnabled(14)
+	// CreateSwapChainForHwnd(15) CreateSwapChainForCoreWindow(16) ...
+	slotFactory2CreateSwapChainForHwnd = 15
+
+	// IUnknown(0..2), IDXGIObject(3..6), IDXGIDeviceSubObject: GetDevice(7),
+	// IDXGISwapChain: Present(8) GetBuffer(9) SetFullscreenState(10)
+	// GetFullscreenState(11) GetDesc(12) ResizeBuffers(13) ResizeTarget(14)
+	// GetContainingOutput(15) GetFrameStatistics(16) GetLastPresentCount(17).
+	slotSwapChainPresent       = 8
+	slotSwapChainGetBuffer     = 9
+	slotSwapChainResizeBuffers = 13
+)
+
+// DXGI_USAGE and DXGI_SWAP_EFFECT values (dxgi.h, dxgitype.h).
+const (
+	usageShaderInput        = 1 << (0 + 4)
+	usageRenderTargetOutput = 1 << (1 + 4)
+	usageUnorderedAccess    = 1 << (6 + 4)
+	swapEffectFlipDiscard   = 4
+)
+
+// swapChainDesc1 is DXGI_SWAP_CHAIN_DESC1 (48 bytes).
+type swapChainDesc1 struct {
+	Width, Height uint32
+	Format        uint32
+	Stereo        uint32 // BOOL
+	SampleCount   uint32
+	SampleQuality uint32
+	BufferUsage   uint32
+	BufferCount   uint32
+	Scaling       uint32 // DXGI_SCALING_STRETCH = 0
+	SwapEffect    uint32
+	AlphaMode     uint32 // DXGI_ALPHA_MODE_UNSPECIFIED = 0
+	Flags         uint32
+}
+
+// FactoryOfDevice returns the factory that made the adapter a Direct3D device
+// runs on (IDXGIDevice::GetAdapter, IDXGIObject::GetParent), which is the one a
+// swap chain for that device is made by. device is an ID3D11Device pointer;
+// nothing of it is retained.
+func FactoryOfDevice(device unsafe.Pointer) (*Factory, error) {
+	dxgiDev, err := com.QueryInterface(device, &iidIDXGIDevice, "QueryInterface(IDXGIDevice)")
+	if err != nil {
+		return nil, err
+	}
+	defer com.Release(dxgiDev)
+	var ad unsafe.Pointer
+	if err := com.Check("IDXGIDevice::GetAdapter", com.Call1(dxgiDev, slotDeviceGetAdapter, uintptr(unsafe.Pointer(&ad)))); err != nil {
+		return nil, err
+	}
+	if ad == nil {
+		return nil, com.Check("IDXGIDevice::GetAdapter", com.EFail)
+	}
+	com.Adopt()
+	defer com.Release(ad)
+	var f unsafe.Pointer
+	if err := com.Check("IDXGIAdapter::GetParent", com.Call2(ad, slotObjectGetParent, uintptr(unsafe.Pointer(&iidIDXGIFactory1)), uintptr(unsafe.Pointer(&f)))); err != nil {
+		return nil, err
+	}
+	if f == nil {
+		return nil, com.Check("IDXGIAdapter::GetParent", com.EFail)
+	}
+	com.Adopt()
+	return &Factory{ptr: f}, nil
+}
+
+// SwapChain is an owned IDXGISwapChain1.
+type SwapChain struct{ ptr unsafe.Pointer }
+
+// CreateSwapChainForHwnd creates a flip-model swap chain (FLIP_DISCARD,
+// R8G8B8A8_UNORM, d.BufferCount buffers, no multisampling) for the window hwnd
+// and the Direct3D 11 device. The back buffers can be render targets, shader
+// inputs and UAVs (DXGI_USAGE_UNORDERED_ACCESS): whether a driver honours the
+// last for a flip swap chain is not stated by the documentation, so a refusal
+// is returned as the error it is. One flip swap chain per window: close the
+// previous one (and Flush the device) before making another for the same hwnd.
+func (f *Factory) CreateSwapChainForHwnd(device unsafe.Pointer, hwnd uintptr, d SwapChainDesc) (*SwapChain, error) {
+	d, err := d.validated()
+	if err != nil {
+		return nil, err
+	}
+	if f == nil || f.ptr == nil || device == nil || hwnd == 0 {
+		return nil, com.Check("CreateSwapChainForHwnd", com.EInvalidArg)
+	}
+	f2, err := com.QueryInterface(f.ptr, &iidIDXGIFactory2, "QueryInterface(IDXGIFactory2)")
+	if err != nil {
+		return nil, err
+	}
+	defer com.Release(f2)
+	desc := swapChainDesc1{
+		Width: d.Width, Height: d.Height, Format: FormatR8G8B8A8UNorm, SampleCount: 1,
+		BufferUsage: usageShaderInput | usageRenderTargetOutput | usageUnorderedAccess,
+		BufferCount: d.BufferCount, SwapEffect: swapEffectFlipDiscard,
+	}
+	var sc unsafe.Pointer
+	h := com.Call6(f2, slotFactory2CreateSwapChainForHwnd, uintptr(device), hwnd, uintptr(unsafe.Pointer(&desc)), 0, 0, uintptr(unsafe.Pointer(&sc)))
+	if err := com.Check("CreateSwapChainForHwnd", h); err != nil {
+		return nil, err
+	}
+	if sc == nil {
+		return nil, com.Check("CreateSwapChainForHwnd", com.EFail)
+	}
+	com.Adopt()
+	return &SwapChain{ptr: sc}, nil
+}
+
+// Present is IDXGISwapChain::Present with no flags: syncInterval 0 presents at
+// once, 1 waits for the next vertical blank. The status DXGI_STATUS_OCCLUDED (a
+// hidden or covered window) is a success.
+func (s *SwapChain) Present(syncInterval uint32) error {
+	if s == nil || s.ptr == nil {
+		return com.Check("Present", com.EInvalidArg)
+	}
+	return com.Check("Present", com.Call2(s.ptr, slotSwapChainPresent, uintptr(syncInterval), 0))
+}
+
+// BackBuffer is IDXGISwapChain::GetBuffer: an owned reference to the
+// ID3D11Texture2D that is buffer index (0 is always the buffer to draw into next
+// in the flip model). The caller releases it; every reference must be released,
+// with its views, before ResizeBuffers.
+func (s *SwapChain) BackBuffer(index uint32) (unsafe.Pointer, error) {
+	if s == nil || s.ptr == nil {
+		return nil, com.Check("GetBuffer", com.EInvalidArg)
+	}
+	var t unsafe.Pointer
+	if err := com.Check("GetBuffer", com.Call3(s.ptr, slotSwapChainGetBuffer, uintptr(index), uintptr(unsafe.Pointer(&iidID3D11Texture2D)), uintptr(unsafe.Pointer(&t)))); err != nil {
+		return nil, err
+	}
+	if t == nil {
+		return nil, com.Check("GetBuffer", com.EFail)
+	}
+	com.Adopt()
+	return t, nil
+}
+
+// ResizeBuffers is IDXGISwapChain::ResizeBuffers keeping the buffer count and
+// the format. It fails with DXGI_ERROR_INVALID_CALL while a reference to a back
+// buffer is alive.
+func (s *SwapChain) ResizeBuffers(width, height uint32) error {
+	if s == nil || s.ptr == nil {
+		return com.Check("ResizeBuffers", com.EInvalidArg)
+	}
+	return com.Check("ResizeBuffers", com.Call5(s.ptr, slotSwapChainResizeBuffers, 0, uintptr(width), uintptr(height), 0, 0))
+}
+
+// Close releases the swap chain. It is idempotent.
+func (s *SwapChain) Close() {
+	if s != nil && s.ptr != nil {
+		com.Release(s.ptr)
+		s.ptr = nil
+	}
+}

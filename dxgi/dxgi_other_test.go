@@ -36,3 +36,27 @@ func TestStubs(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSwapChainStubs(t *testing.T) {
+	if _, err := FactoryOfDevice(nil); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatal(err)
+	}
+	f := &Factory{}
+	if _, err := f.CreateSwapChainForHwnd(nil, 1, SwapChainDesc{}); !errors.Is(err, ErrBadDesc) {
+		t.Fatal(err)
+	}
+	if _, err := f.CreateSwapChainForHwnd(nil, 1, SwapChainDesc{Width: 8, Height: 8}); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatal(err)
+	}
+	s := &SwapChain{}
+	if err := s.Present(0); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatal(err)
+	}
+	if p, err := s.BackBuffer(0); p != nil || !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatal(p, err)
+	}
+	if err := s.ResizeBuffers(8, 8); !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Fatal(err)
+	}
+	s.Close()
+}

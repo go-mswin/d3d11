@@ -36,6 +36,7 @@ func TestSlots(t *testing.T) {
 		{"ctxCSSetShader", ctxCSSetShader, 69},
 		{"ctxCSSetConstantBuffers", ctxCSSetConstantBuffers, 71},
 		{"ctxFlush", ctxFlush, 111},
+		{"ctxClearState", ctxClearState, 110},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)
