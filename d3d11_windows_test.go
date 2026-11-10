@@ -304,8 +304,14 @@ func TestErrorPathsRelease(t *testing.T) {
 	if err := ctx.SetConstantBuffers(0, structured); !errors.Is(err, ErrBadDesc) {
 		t.Errorf("non-constant buffer in a constant slot: %v", err)
 	}
-	if err := ctx.UpdateBuffer(structured, make([]byte, 64)); !errors.Is(err, ErrBadDesc) {
-		t.Errorf("UpdateBuffer of a non-constant buffer: %v", err)
+	if err := ctx.UpdateBuffer(structured, make([]byte, 128)); !errors.Is(err, ErrBadDesc) {
+		t.Errorf("UpdateBuffer past the buffer's size: %v", err)
+	}
+	if err := ctx.UpdateBuffer(structured, nil); !errors.Is(err, ErrBadDesc) {
+		t.Errorf("empty UpdateBuffer: %v", err)
+	}
+	if err := ctx.UpdateBuffer(staging, make([]byte, 64)); !errors.Is(err, ErrBadDesc) {
+		t.Errorf("UpdateBuffer of a staging buffer: %v", err)
 	}
 	cb := must(d.CreateBuffer(BufferDesc{Kind: KindConstant, Size: 16}))
 	if err := ctx.UpdateBuffer(cb, make([]byte, 8)); !errors.Is(err, ErrBadDesc) {

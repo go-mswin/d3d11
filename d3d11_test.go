@@ -43,6 +43,8 @@ func TestValidate(t *testing.T) {
 		{Kind: KindStructured, Size: 64, Stride: 4, SRV: true, UAV: true},
 		{Kind: KindStructured, Size: 2048, Stride: 2048, SRV: true, Initial: make([]byte, 2048)},
 		{Kind: KindRaw, Size: 16, UAV: true},
+		{Kind: KindStructured, Size: 64, Stride: 4, SRV: true, Dynamic: true},
+		{Kind: KindRaw, Size: 16, SRV: true, Dynamic: true},
 		{Kind: KindConstant, Size: 16},
 		{Kind: KindConstant, Size: MaxConstantBufferBytes},
 		{Kind: KindStaging, Size: lim},
@@ -73,6 +75,10 @@ func TestValidate(t *testing.T) {
 		{BufferDesc{Kind: KindRaw, Size: 16}, ErrBadDesc},
 		{BufferDesc{Kind: KindStructured, Size: 16, Stride: 4}, ErrBadDesc},
 		{BufferDesc{Kind: 0, Size: 16, SRV: true}, ErrBadDesc},
+		{BufferDesc{Kind: KindStructured, Size: 16, Stride: 4, SRV: true, UAV: true, Dynamic: true}, ErrBadDesc},
+		{BufferDesc{Kind: KindConstant, Size: 16, Dynamic: true}, ErrBadDesc},
+		{BufferDesc{Kind: KindStaging, Size: 16, Dynamic: true}, ErrBadDesc},
+		{BufferDesc{Kind: KindRaw, Size: 16, Dynamic: true}, ErrBadDesc},
 	}
 	for i, c := range bad {
 		if _, err := c.d.validate(lim); !errors.Is(err, c.want) {
